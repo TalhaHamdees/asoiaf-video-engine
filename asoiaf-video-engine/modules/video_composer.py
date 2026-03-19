@@ -181,10 +181,14 @@ def _render_highlight_caption(
     img = Image.fromarray(frame)
     draw = ImageDraw.Draw(img)
 
-    # Build display strings
+    # Build display strings — strip punctuation but keep apostrophes (don't, won't)
     display_words = []
     for w in words:
-        text = w["word"].upper() if uppercase else w["word"]
+        text = w["word"]
+        # Remove leading/trailing punctuation except apostrophes
+        text = text.strip(".,!?;:\"()-[]{}...")
+        if uppercase:
+            text = text.upper()
         display_words.append(text)
 
     # Measure total width
