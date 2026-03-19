@@ -1,0 +1,36 @@
+# Python
+venv/
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+
+# Pipeline artifacts
+temp/
+output/
+input/
+
+# Image library data (images are large binaries)
+assets/images/characters/
+assets/images/locations/
+assets/images/events/
+assets/images/concepts/
+assets/images/general/
+assets/images/metadata.json
+assets/images/usage_log.json
+assets/images/gaps.json
+
+# Fonts (downloaded at runtime)
+assets/fonts/*.ttf
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# OS
+Thumbs.db
+.DS_Store
+
+# Env
+.env
