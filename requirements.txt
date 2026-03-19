@@ -1,21 +1,10 @@
 # ASOIAF Video Engine — Dependencies
-
-# Core video/audio processing
 moviepy>=2.0.0
 Pillow>=10.0.0
 pydub>=0.25.1
 numpy>=1.24.0
-
-# TTS
 requests>=2.31.0
-
-# Transcription (install ONE of these)
-faster-whisper>=1.0.0      # Recommended: faster, lower memory
-# openai-whisper>=20231117  # Alternative: official OpenAI whisper
-
-# LLM for search query generation (optional but recommended)
+faster-whisper>=1.0.0
 anthropic>=0.30.0
 
-# System dependency (install separately):
-# sudo apt install ffmpeg
-# OR: brew install ffmpeg (macOS)
+# System: sudo apt install ffmpeg

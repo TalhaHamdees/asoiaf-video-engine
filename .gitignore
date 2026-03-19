@@ -21,9 +21,11 @@ output/
 assets/images/*
 assets/fonts/*
 assets/music/*
+input/images/*
 !assets/images/.gitkeep
 !assets/fonts/.gitkeep
 !assets/music/.gitkeep
+!input/images/.gitkeep
 
 # API keys / secrets
 .env

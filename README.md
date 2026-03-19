@@ -1,46 +1,18 @@
 # ASOIAF Short-Form Video Engine
 
-An end-to-end automation pipeline that transforms narration scripts into fully edited short-form videos (YouTube Shorts / Reels / TikTok) featuring AI-generated voiceover, curated ASOIAF artwork, Ken Burns cinematic transitions, and synchronized burned-in captions.
+Automated pipeline that turns narration scripts into short-form vertical videos (1080x1920) with AI voiceover, intelligent image matching, Ken Burns transitions, and burned-in captions — built for ASOIAF / Game of Thrones content.
 
-Built for the **Fictopia** content brand — drop a script, get a publish-ready video.
+## How It Works
 
----
-
-## Demo Pipeline
+The engine uses a **two-phase workflow** with a self-growing image library:
 
 ```
-Script (text)
-    │
-    ├──► Script Parser ──► segmented narrative beats
-    ├──► ElevenLabs TTS ──► voiceover audio + word timestamps
-    │         │
-    │         └──► Silence Removal ──► tight, short-form pacing
-    │
-    ├──► Whisper Transcription ──► word-level alignment
-    │
-    ├──► Image Fetcher (local library + web search) ──► matched visuals
-    │
-    └──► Video Composer
-              ├── Ken Burns pan/zoom effects
-              ├── 9:16 vertical framing (1080×1920)
-              ├── SRT / highlighted captions
-              └──► Final MP4 output
+Phase 1: prepare     Script → TTS → Audio cleanup → Entity extraction → Library matching → Shopping list
+                      ↓ (you download missing images)
+Phase 2: continue    Pick up images → Ken Burns video → SRT captions → Auto-tag & ingest to library
 ```
 
----
-
-## Features
-
-- **ElevenLabs TTS** with native word-level timestamps (Whisper as fallback)
-- **Smart silence removal** — strips dead air while preserving natural pacing
-- **Timestamp remapping** — adjusts word timings after silence removal so captions stay in sync
-- **Hybrid image sourcing** — local curated library with Google/Bing web search fallback
-- **LLM-powered search queries** — uses Claude API to generate contextually accurate image queries from script segments
-- **8 Ken Burns effects** — zoom in/out, pan 4 directions, and combo movements cycled per segment
-- **Two caption modes** — SRT burn-in via FFmpeg (fast, reliable) or word-by-word highlight rendering via Pillow
-- **Configurable everything** — voice settings, audio thresholds, caption styling, video encoding, all in one config file
-
----
+Every image you provide gets **auto-tagged by Claude** and added to the permanent library. Early videos require manual image sourcing, but as the library grows, coverage increases automatically — by ~30 videos, most content is fully automated.
 
 ## Quick Start
 
@@ -48,149 +20,125 @@ Script (text)
 
 - Python 3.11+
 - [FFmpeg](https://ffmpeg.org/download.html) installed and on PATH
-- [ElevenLabs](https://elevenlabs.io/) API key + voice ID
+- [ElevenLabs](https://elevenlabs.io/) API key (required for TTS)
+- [Anthropic](https://console.anthropic.com/) API key (recommended for smart entity extraction)
 
-### Installation
+### Setup
 
 ```bash
 git clone https://github.com/TalhaHamdees/asoiaf-video-engine.git
 cd asoiaf-video-engine
-
 pip install -r requirements.txt
 ```
 
-### Configuration
-
-Open `config.py` and set your API keys:
+Edit `config.py` with your API keys:
 
 ```python
-# Required
-api_key: str = "your-elevenlabs-api-key"
-voice_id: str = "your-voice-id"
+class ElevenLabsConfig:
+    api_key: str = "your-elevenlabs-key"
+    voice_id: str = "your-voice-id"
 
-# Optional (improves image fetching)
-google_api_key: str = "your-google-cse-key"
-google_cx: str = "your-search-engine-id"
-anthropic_api_key: str = "your-anthropic-key"
+class ImageSearchConfig:
+    anthropic_api_key: str = "your-anthropic-key"  # optional but recommended
 ```
 
-### Add Images (Recommended)
+### Usage
 
-Drop curated ASOIAF artwork into `assets/images/` with descriptive filenames:
-
-```
-assets/images/
-├── aegon-targaryen-conquest.jpg
-├── red-wedding-robb-stark.png
-├── winterfell-castle-north.jpg
-└── ...
-```
-
-Or create `assets/images/metadata.json` for tag-based matching:
-
-```json
-{
-  "aegon-conquest.jpg": ["aegon", "targaryen", "conquest", "dragon", "balerion"],
-  "red-wedding.png": ["red wedding", "stark", "frey", "walder"]
-}
-```
-
-### Run
+**Phase 1** — Generate voiceover and get your image shopping list:
 
 ```bash
-# From a script file
-python main.py --script my_script.txt --output my_video.mp4
-
-# From inline text
-python main.py --script-text "The Doom of Valyria destroyed an empire that had lasted five thousand years..."
-
-# With options
-python main.py --script script.txt --caption-style srt --voice-id pNInz6obpgDQGcFmaJgB --debug
+python main.py prepare --script script.txt --title "The Doom of Valyria"
 ```
 
----
+**Between phases** — Check `output/shopping_list.txt`, download the listed images, and save them to `input/images/` as `01.jpg`, `02.jpg`, etc.
+
+**Phase 2** — Build the video:
+
+```bash
+python main.py continue
+```
+
+**One-shot** — If the library already covers everything:
+
+```bash
+python main.py run --script script.txt --title "The Doom of Valyria"
+```
 
 ## Project Structure
 
 ```
-asoiaf-video-engine/
-├── main.py                  # Pipeline orchestrator — runs all 7 steps
-├── config.py                # Centralized configuration (API keys, styles, thresholds)
+├── main.py                  # Pipeline orchestrator & CLI
+├── config.py                # All configuration (API keys, video settings, thresholds)
 ├── requirements.txt         # Python dependencies
 ├── modules/
-│   ├── script_parser.py     # Splits script into segments (sentence/paragraph/marker modes)
-│   ├── tts_generator.py     # ElevenLabs TTS with word-level timestamp extraction
-│   ├── audio_processor.py   # Silence removal, normalization, timestamp remapping
-│   ├── transcriber.py       # Whisper transcription + segment-to-audio alignment
-│   ├── image_fetcher.py     # Local library search + LLM query gen + web image download
-│   └── video_composer.py    # Ken Burns effects, caption rendering, MoviePy assembly
+│   ├── script_parser.py     # Script → timed segments
+│   ├── tts_generator.py     # ElevenLabs TTS with word timestamps
+│   ├── audio_processor.py   # Silence removal & normalization
+│   ├── transcriber.py       # Whisper fallback for word timing
+│   ├── image_manager.py     # Library system, entity extraction, scoring, auto-tagging
+│   └── video_composer.py    # Ken Burns effects, video assembly, SRT captions
+├── input/images/            # Drop downloaded images here (01.jpg, 02.jpg, ...)
 ├── assets/
-│   ├── images/              # Curated ASOIAF image library
-│   ├── fonts/               # Caption fonts (Montserrat-Bold recommended)
-│   └── music/               # Background tracks (future feature)
-├── output/                  # Final rendered videos
-└── temp/                    # Intermediate files (auto-cleaned between runs)
+│   ├── images/              # Permanent image library (auto-managed)
+│   ├── fonts/               # Caption fonts (Montserrat-Bold.ttf)
+│   └── music/               # Background music (future)
+├── temp/                    # Intermediate files (auto-created)
+└── output/                  # Final videos & shopping lists
 ```
 
----
+## Image Library System
 
-## Pipeline Steps
+The core innovation is an **incremental image library** with LLM-powered tagging:
 
-| Step | Module | Description |
-|------|--------|-------------|
-| 1 | `script_parser` | Parse script into segments, merge short ones (<5 words) |
-| 2 | `tts_generator` | Generate voiceover via ElevenLabs (with timestamps if available) |
-| 3 | `audio_processor` | Remove silence, normalize volume, remap timestamps |
-| 4 | `transcriber` | Whisper fallback for timestamps + align segments to audio |
-| 5 | `image_fetcher` | Match images from local library or fetch via web search |
-| 6 | `video_composer` | Assemble clips with Ken Burns effects at 1080×1920 @ 30fps |
-| 7 | `video_composer` | Generate SRT and burn captions via FFmpeg |
+- **Entity extraction** — Claude analyzes each script segment to identify characters, locations, events, mood, and visual concepts
+- **Scoring algorithm** — Library images are scored against segment entities (character match: +5, event: +4, location: +3, concept: +2, mood: +1) with recency penalties to avoid repetition
+- **Auto-tagging** — New images are tagged by Claude with rich metadata before being ingested
+- **Usage tracking** — `usage_log.json` tracks reuse frequency; `gaps.json` flags overused images needing more variety
 
----
+## Configuration
 
-## Configuration Reference
+Key settings in `config.py`:
 
-| Section | Key Settings |
-|---------|-------------|
-| **Video** | 1080×1920 @ 30fps, h264 @ 8Mbps, 0.3s crossfade |
-| **Ken Burns** | Zoom range 1.0–1.15×, max pan 80px, 8 effect variations |
-| **Audio** | Silence threshold -40 dBFS, min silence 400ms, normalize to -20 dBFS |
-| **Captions** | Montserrat Bold 60px, white text + black stroke, gold highlight, 3 words/group |
-| **Whisper** | Base model, English, CPU (set `device: "cuda"` for GPU) |
+| Setting | Default | Description |
+|---------|---------|-------------|
+| Video resolution | 1080x1920 | Vertical short-form format |
+| Image interval | 3.5s | Target duration per image |
+| Match threshold | 5.0 | Minimum score to accept a library match |
+| Ken Burns zoom | 1.0–1.15 | Zoom range for motion effect |
+| Caption font | Montserrat-Bold | SRT caption font |
+| Whisper model | base | Speech-to-text model size |
 
----
+## CLI Reference
 
-## Roadmap
+```bash
+# Phase 1: Prepare audio + shopping list
+python main.py prepare --script <file> --title <name> [--auto] [--voice-id <id>]
 
-- [x] End-to-end pipeline (script → video)
-- [x] ElevenLabs TTS with word timestamps
-- [x] Silence removal with timestamp remapping
-- [x] Ken Burns cinematic transitions
-- [x] SRT caption burn-in
-- [ ] Word-by-word highlighted captions (Hormozi style)
-- [ ] Crossfade transitions between image segments
-- [ ] Background music layer with voice ducking
-- [ ] AI-generated images per scene (Flux/DALL-E) for copyright safety
-- [ ] Batch processing (multiple scripts → multiple videos)
-- [ ] Auto-upload to YouTube via API
-- [ ] A/B thumbnail generation
+# Phase 2: Build video from provided images
+python main.py continue
 
----
+# Full pipeline (prepare + continue)
+python main.py run --script <file> --title <name> [--voice-id <id>]
 
-## Tech Stack
+# Options
+--debug          Enable debug logging
+--auto           Auto-continue if library covers all segments
+--voice-id       Override ElevenLabs voice ID
+```
 
-| Component | Technology |
-|-----------|-----------|
-| Video composition | MoviePy 2.x |
-| Encoding | FFmpeg (h264/AAC) |
-| Audio processing | pydub |
-| Transcription | faster-whisper |
-| Caption rendering | Pillow + FFmpeg subtitles filter |
-| TTS | ElevenLabs API |
-| Image search | Google CSE / Bing Image Search |
-| Query generation | Claude API (Anthropic SDK) |
+## Dependencies
 
----
+| Package | Purpose |
+|---------|---------|
+| moviepy | Video composition and concatenation |
+| Pillow | Image loading, resizing, cropping |
+| pydub | Audio manipulation and silence detection |
+| numpy | Array operations for Ken Burns effects |
+| requests | ElevenLabs API calls |
+| faster-whisper | Word-level speech-to-text timestamps |
+| anthropic | Claude API for entity extraction and auto-tagging |
+
+**System requirement:** FFmpeg must be installed and available on PATH.
 
 ## License
 
