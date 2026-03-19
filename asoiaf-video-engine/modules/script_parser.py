@@ -158,9 +158,19 @@ def resegment_by_time(
 
 
 def _split_text_evenly(text: str, num_parts: int) -> list[str]:
-    """Split text into roughly equal parts at clause boundaries."""
-    # Try splitting on commas, semicolons, or conjunctions
-    clauses = re.split(r'(?<=[,;])\s+|(?<=\band\b)\s+|(?<=\bbut\b)\s+', text)
+    """Split text into roughly equal parts at clause boundaries.
+
+    Splits *before* conjunctions/commas so they stay attached to the
+    clause they introduce, then merges any chunk shorter than 3 words
+    into its neighbour to avoid orphan fragments like "and" or "but".
+    """
+    # Split BEFORE conjunctions and after punctuation — keeps the
+    # conjunction with the clause it introduces.
+    clauses = re.split(r'(?<=[,;])\s+|\s+(?=\band\b)|\s+(?=\bbut\b)', text)
+    clauses = [c.strip() for c in clauses if c.strip()]
+
+    # Merge any chunk with fewer than 3 words into its neighbour
+    clauses = _merge_short_chunks(clauses, min_words=3)
 
     if len(clauses) >= num_parts:
         # Distribute clauses evenly across parts
@@ -170,7 +180,7 @@ def _split_text_evenly(text: str, num_parts: int) -> list[str]:
             chunk = " ".join(clauses[i:i + per_part])
             if chunk.strip():
                 parts.append(chunk.strip())
-        return parts[:num_parts]  # in case we got too many
+        return parts[:num_parts]
 
     # Not enough natural split points — split by word count
     words = text.split()
@@ -181,6 +191,27 @@ def _split_text_evenly(text: str, num_parts: int) -> list[str]:
         if chunk.strip():
             parts.append(chunk.strip())
     return parts[:num_parts]
+
+
+def _merge_short_chunks(chunks: list[str], min_words: int = 3) -> list[str]:
+    """Merge chunks with fewer than *min_words* words into an adjacent chunk."""
+    if len(chunks) <= 1:
+        return chunks
+
+    merged: list[str] = []
+    for chunk in chunks:
+        if merged and len(merged[-1].split()) < min_words:
+            # Previous chunk was too short — glue this one onto it
+            merged[-1] = merged[-1] + " " + chunk
+        else:
+            merged.append(chunk)
+
+    # Final chunk might also be too short — merge backwards
+    if len(merged) >= 2 and len(merged[-1].split()) < min_words:
+        merged[-2] = merged[-2] + " " + merged[-1]
+        merged.pop()
+
+    return merged
 
 
 def _split_by_sentence(text: str) -> list[ScriptSegment]:

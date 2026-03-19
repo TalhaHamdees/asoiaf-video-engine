@@ -325,26 +325,39 @@ def extract_entities_batch(
         import anthropic
     except ImportError:
         logger.warning("anthropic SDK not installed — using naive extraction.")
-        return [_naive_entity_extraction(seg.text) for seg in segments]
+        return _naive_extract_all(segments)
 
     client = anthropic.Anthropic(api_key=anthropic_api_key)
 
+    full_script = " ".join(seg.text for seg in segments)
     segment_texts = "\n".join(
         f"[{i}] {seg.text}" for i, seg in enumerate(segments)
     )
 
-    prompt = f"""You are analyzing script segments for an ASOIAF (A Song of Ice and Fire / Game of Thrones) video.
+    prompt = f"""You are analyzing script segments for an ASOIAF (A Song of Ice and Fire / Game of Thrones) YouTube video.
 
-For each numbered segment, extract:
+FULL SCRIPT (for narrative context):
+{full_script}
+
+For each numbered segment below, extract:
 - characters: array of character names mentioned or clearly implied (use full names)
 - location: the primary location depicted (empty string if unclear)
 - event: specific ASOIAF event name if referenced (empty string if none)
 - concepts: array of visual concepts useful for image searching (dragons, battle, throne, betrayal, etc.)
 - mood: one of: epic, dark, dramatic, peaceful, intense, mysterious, tragic, triumphant
-- search_query: a 4-8 word image search query to find matching ASOIAF artwork
+- search_query: a Google Image search query (5-10 words) that an editor can paste to find matching ASOIAF fan art or fantasy artwork
 - looking_for: a short human-readable description of what the ideal image would show
 
-IMPORTANT: Understand ASOIAF context. "The Young Wolf" = Robb Stark. "The Imp" = Tyrion Lannister. 
+SEARCH QUERY RULES:
+- The query will be pasted directly into Google Images — make it practical.
+- Always include a VISUAL ANCHOR describing what the image should SHOW (e.g., "volcanic eruption", "dragon breathing fire", "castle siege"), not just character/place names.
+- Always include an ASOIAF-specific term (character, house, location, or event name).
+- End with "fantasy art" or "asoiaf art" to bias toward artwork rather than photos.
+- GOOD: "Doom of Valyria volcanic eruption fantasy art", "Targaryen dragonlords riding dragons asoiaf art"
+- BAD: "Their asoiaf art", "asoiaf fantasy art", "In asoiaf art", "Long Targaryens Narrow Sea asoiaf art"
+- If a segment is vague on its own, use the full script context above to infer what it's about.
+
+IMPORTANT: Understand ASOIAF context. "The Young Wolf" = Robb Stark. "The Imp" = Tyrion Lannister.
 "She sailed across the Narrow Sea" in context = Daenerys Targaryen. Use your knowledge.
 
 Return ONLY a JSON array of objects (one per segment). No markdown, no backticks, no commentary.
@@ -374,21 +387,285 @@ Segments:
     except Exception as e:
         logger.warning("LLM entity extraction failed: %s", e)
 
-    return [_naive_entity_extraction(seg.text) for seg in segments]
+    return _naive_extract_all(segments)
 
 
-def _naive_entity_extraction(text: str) -> dict:
-    """Fallback: extract capitalized words as potential entities."""
+
+# Stopwords that get falsely picked up as entities when capitalised
+# at the start of a sentence.
+_STOPWORDS = {
+    "the", "a", "an", "but", "and", "or", "in", "on", "at", "to", "of",
+    "for", "by", "with", "from", "their", "they", "them", "he", "him",
+    "his", "she", "her", "it", "its", "this", "that", "these", "those",
+    "only", "long", "when", "where", "then", "there", "here", "some",
+    "all", "no", "not", "yet", "so", "as", "if", "while", "before",
+    "after", "once", "now", "never", "every", "each", "many", "few",
+    "more", "most", "such", "what", "who", "whom", "which", "even",
+    "still", "just", "much", "soon", "great", "one", "two", "three",
+}
+
+# ASOIAF entity dictionary — maps lowercase phrases to visual search hints.
+ASOIAF_ENTITIES: dict[str, dict] = {
+    # Houses
+    "targaryens": {"type": "house", "visual": "Targaryen dragon dynasty"},
+    "targaryen": {"type": "house", "visual": "Targaryen dragon dynasty"},
+    "starks": {"type": "house", "visual": "Stark direwolf Winterfell"},
+    "stark": {"type": "house", "visual": "Stark direwolf Winterfell"},
+    "lannisters": {"type": "house", "visual": "Lannister golden lion"},
+    "lannister": {"type": "house", "visual": "Lannister golden lion"},
+    "baratheons": {"type": "house", "visual": "Baratheon stag"},
+    "baratheon": {"type": "house", "visual": "Baratheon stag"},
+    "martells": {"type": "house", "visual": "Martell Dorne sun spear"},
+    "martell": {"type": "house", "visual": "Martell Dorne sun spear"},
+    "tyrells": {"type": "house", "visual": "Tyrell Highgarden rose"},
+    "tyrell": {"type": "house", "visual": "Tyrell Highgarden rose"},
+    "greyjoys": {"type": "house", "visual": "Greyjoy Iron Islands kraken"},
+    "greyjoy": {"type": "house", "visual": "Greyjoy Iron Islands kraken"},
+    "arryns": {"type": "house", "visual": "Arryn Eyrie falcon"},
+    "arryn": {"type": "house", "visual": "Arryn Eyrie falcon"},
+    "tullys": {"type": "house", "visual": "Tully Riverrun fish"},
+    "tully": {"type": "house", "visual": "Tully Riverrun fish"},
+    "boltons": {"type": "house", "visual": "Bolton flayed man Dreadfort"},
+    "bolton": {"type": "house", "visual": "Bolton flayed man Dreadfort"},
+    "freys": {"type": "house", "visual": "Frey Twins bridge"},
+    "frey": {"type": "house", "visual": "Frey Twins bridge"},
+    "velaryons": {"type": "house", "visual": "Velaryon seahorse fleet"},
+    "velaryon": {"type": "house", "visual": "Velaryon seahorse fleet"},
+    "hightowers": {"type": "house", "visual": "Hightower Oldtown tower"},
+    "hightower": {"type": "house", "visual": "Hightower Oldtown tower"},
+    # Characters
+    "daenerys": {"type": "character", "visual": "Daenerys Targaryen dragons"},
+    "jon snow": {"type": "character", "visual": "Jon Snow Night's Watch"},
+    "aegon": {"type": "character", "visual": "Aegon Targaryen conqueror"},
+    "cersei": {"type": "character", "visual": "Cersei Lannister queen"},
+    "tyrion": {"type": "character", "visual": "Tyrion Lannister"},
+    "jaime": {"type": "character", "visual": "Jaime Lannister knight"},
+    "ned": {"type": "character", "visual": "Eddard Stark Winterfell"},
+    "eddard": {"type": "character", "visual": "Eddard Stark Winterfell"},
+    "robb": {"type": "character", "visual": "Robb Stark Young Wolf"},
+    "bran": {"type": "character", "visual": "Bran Stark three-eyed raven"},
+    "arya": {"type": "character", "visual": "Arya Stark sword"},
+    "sansa": {"type": "character", "visual": "Sansa Stark queen"},
+    "rhaegar": {"type": "character", "visual": "Rhaegar Targaryen prince"},
+    "robert": {"type": "character", "visual": "Robert Baratheon warhammer"},
+    "stannis": {"type": "character", "visual": "Stannis Baratheon Dragonstone"},
+    "renly": {"type": "character", "visual": "Renly Baratheon"},
+    "joffrey": {"type": "character", "visual": "Joffrey Baratheon crown"},
+    "petyr": {"type": "character", "visual": "Petyr Baelish Littlefinger"},
+    "littlefinger": {"type": "character", "visual": "Littlefinger schemer"},
+    "varys": {"type": "character", "visual": "Varys Spider"},
+    "melisandre": {"type": "character", "visual": "Melisandre red priestess fire"},
+    "the night king": {"type": "character", "visual": "Night King White Walker ice"},
+    "viserys": {"type": "character", "visual": "Viserys Targaryen"},
+    "rhaenyra": {"type": "character", "visual": "Rhaenyra Targaryen dragon"},
+    "alicent": {"type": "character", "visual": "Alicent Hightower queen"},
+    "daemon": {"type": "character", "visual": "Daemon Targaryen Dark Sister"},
+    "balerion": {"type": "character", "visual": "Balerion Black Dread dragon"},
+    "drogon": {"type": "character", "visual": "Drogon dragon fire"},
+    "dragonlords": {"type": "character", "visual": "Valyrian dragonlords dragons"},
+    "dragonlord": {"type": "character", "visual": "Valyrian dragonlord dragon"},
+    # Locations
+    "valyria": {"type": "location", "visual": "Valyria ancient empire"},
+    "valyrian freehold": {"type": "location", "visual": "Valyrian Freehold empire"},
+    "narrow sea": {"type": "location", "visual": "Narrow Sea ships crossing"},
+    "fourteen flames": {"type": "location", "visual": "Fourteen Flames volcanoes Valyria"},
+    "dragonstone": {"type": "location", "visual": "Dragonstone castle island"},
+    "winterfell": {"type": "location", "visual": "Winterfell castle snow"},
+    "king's landing": {"type": "location", "visual": "King's Landing city Red Keep"},
+    "kings landing": {"type": "location", "visual": "King's Landing city Red Keep"},
+    "the wall": {"type": "location", "visual": "Wall Night's Watch ice"},
+    "castle black": {"type": "location", "visual": "Castle Black Night's Watch"},
+    "iron throne": {"type": "location", "visual": "Iron Throne swords"},
+    "red keep": {"type": "location", "visual": "Red Keep castle"},
+    "oldtown": {"type": "location", "visual": "Oldtown Citadel Hightower"},
+    "braavos": {"type": "location", "visual": "Braavos Titan free city"},
+    "pentos": {"type": "location", "visual": "Pentos free city Essos"},
+    "meereen": {"type": "location", "visual": "Meereen pyramid city"},
+    "harrenhal": {"type": "location", "visual": "Harrenhal ruined castle"},
+    "highgarden": {"type": "location", "visual": "Highgarden castle Reach"},
+    "dorne": {"type": "location", "visual": "Dorne desert sun"},
+    "riverrun": {"type": "location", "visual": "Riverrun castle river"},
+    "the eyrie": {"type": "location", "visual": "Eyrie mountain castle"},
+    "pyke": {"type": "location", "visual": "Pyke Iron Islands castle"},
+    "asshai": {"type": "location", "visual": "Asshai shadow lands"},
+    "essos": {"type": "location", "visual": "Essos continent"},
+    "westeros": {"type": "location", "visual": "Westeros continent map"},
+    "beyond the wall": {"type": "location", "visual": "Beyond the Wall snow wildlings"},
+    # Events
+    "doom": {"type": "event", "visual": "Doom of Valyria destruction"},
+    "doom of valyria": {"type": "event", "visual": "Doom of Valyria volcanic eruption"},
+    "red wedding": {"type": "event", "visual": "Red Wedding massacre"},
+    "battle of the bastards": {"type": "event", "visual": "Battle of the Bastards"},
+    "field of fire": {"type": "event", "visual": "Field of Fire Aegon dragons"},
+    "blackwater": {"type": "event", "visual": "Battle of Blackwater wildfire"},
+    "robert's rebellion": {"type": "event", "visual": "Robert's Rebellion war"},
+    "dance of the dragons": {"type": "event", "visual": "Dance of Dragons civil war"},
+    "long night": {"type": "event", "visual": "Long Night White Walkers darkness"},
+    "conquest": {"type": "event", "visual": "Aegon's Conquest Targaryen"},
+    "aegon's conquest": {"type": "event", "visual": "Aegon's Conquest three dragons"},
+    # Concepts
+    "dragon eggs": {"type": "concept", "visual": "dragon eggs hatching"},
+    "old valyria": {"type": "concept", "visual": "Old Valyria ancient glory"},
+    "valyrian steel": {"type": "concept", "visual": "Valyrian steel sword"},
+    "wildfire": {"type": "concept", "visual": "wildfire green explosion"},
+    "white walkers": {"type": "concept", "visual": "White Walkers Others ice"},
+    "three-eyed raven": {"type": "concept", "visual": "three-eyed raven weirwood"},
+    "weirwood": {"type": "concept", "visual": "weirwood tree face"},
+    "direwolf": {"type": "concept", "visual": "direwolf Stark"},
+    "faceless men": {"type": "concept", "visual": "Faceless Men Braavos"},
+    "prophecy": {"type": "concept", "visual": "prophecy vision fire"},
+    "prophetic dream": {"type": "concept", "visual": "prophetic dream vision"},
+}
+
+# Visual action/concept keywords that make search queries more useful.
+_VISUAL_KEYWORDS = {
+    "fire", "flame", "flames", "burn", "burned", "burning",
+    "battle", "war", "fought", "siege", "sacked", "conquered",
+    "dragon", "dragons", "beast", "beasts",
+    "sword", "swords", "blade", "steel",
+    "sailed", "ships", "fleet", "crossing", "voyage",
+    "erupted", "eruption", "volcano", "volcanic", "destroyed", "destruction",
+    "castle", "fortress", "tower", "city", "kingdom", "empire",
+    "death", "died", "killed", "murdered", "slain", "massacre",
+    "throne", "crown", "king", "queen", "prince", "princess", "lord",
+    "army", "soldiers", "knights", "cavalry",
+    "night", "darkness", "shadow", "ice", "snow", "winter",
+    "blood", "betrayal", "revenge", "exile", "fled", "escape",
+    "magic", "sorcery", "sorcerers", "ritual", "spell",
+    "smoke", "ash", "ruin", "ruins", "silence",
+}
+
+
+def _naive_entity_extraction(
+    text: str,
+    neighbors: list[str] | None = None,
+) -> dict:
+    """ASOIAF-aware entity extraction — no API key needed.
+
+    Args:
+        text: The segment text to analyse.
+        neighbors: Optional list of neighbouring segment texts (±1)
+                   used as context when *text* is too short/vague.
+    """
+    text_lower = text.lower()
+
+    # Also consider neighbour text for context
+    context_lower = text_lower
+    if neighbors:
+        context_lower = " ".join(neighbors).lower() + " " + text_lower
+
+    # 1. Match against ASOIAF entity dictionary (check multi-word first)
+    matched_visuals: list[str] = []
+    matched_entities: list[str] = []
+    entity_types: dict[str, str] = {}  # visual -> type
+
+    # Sort keys longest-first so multi-word phrases match before sub-words.
+    # First pass: match against segment text only.
+    for key in sorted(ASOIAF_ENTITIES, key=len, reverse=True):
+        pattern = r'\b' + re.escape(key) + r'\b'
+        if re.search(pattern, text_lower):
+            entry = ASOIAF_ENTITIES[key]
+            visual = entry["visual"]
+            if visual not in matched_visuals:
+                matched_visuals.append(visual)
+                matched_entities.append(key)
+                entity_types[visual] = entry["type"]
+
+    # Second pass: if segment itself yielded no entities (or is very short),
+    # pull context from neighbouring segments.
+    if (not matched_visuals or len(text.split()) < 5) and neighbors:
+        for key in sorted(ASOIAF_ENTITIES, key=len, reverse=True):
+            pattern = r'\b' + re.escape(key) + r'\b'
+            if re.search(pattern, context_lower):
+                entry = ASOIAF_ENTITIES[key]
+                visual = entry["visual"]
+                if visual not in matched_visuals:
+                    matched_visuals.append(visual)
+                    matched_entities.append(key)
+                    entity_types[visual] = entry["type"]
+                    if len(matched_visuals) >= 3:
+                        break  # Don't pull too many from context
+
+    # 2. Extract proper nouns, filtering stopwords
     proper_nouns = re.findall(r'\b[A-Z][a-z]+(?:\s+[A-Z][a-z]+)*\b', text)
+    # Strip leading stopwords from multi-word proper nouns, then filter
+    all_entity_text = " ".join(matched_entities)
+    cleaned_nouns = []
+    for pn in proper_nouns:
+        # Strip leading stopwords (e.g., "The Fourteen Flames" → "Fourteen Flames")
+        words = pn.split()
+        while words and words[0].lower() in _STOPWORDS:
+            words.pop(0)
+        if not words:
+            continue
+        clean = " ".join(words)
+        if (clean.lower() not in _STOPWORDS
+                and clean.lower() not in matched_entities
+                and clean.lower() not in all_entity_text):
+            cleaned_nouns.append(clean)
+    filtered_nouns = cleaned_nouns
+
+    # 3. Pull visual action keywords from the text
+    words_in_text = set(re.findall(r'[a-z]+', text_lower))
+    visual_concepts = sorted(words_in_text & _VISUAL_KEYWORDS)
+
+    # 4. Determine structured fields
+    characters = [v for v, t in entity_types.items() if t == "character"]
+    location = next((v for v, t in entity_types.items() if t == "location"), "")
+    event = next((v for v, t in entity_types.items() if t == "event"), "")
+    concepts = [v for v, t in entity_types.items() if t in ("concept", "house")]
+
+    # Add non-stopword proper nouns as additional characters
+    for noun in filtered_nouns[:3]:
+        if noun not in characters:
+            characters.append(noun)
+
+    # 5. Build search query
+    query_parts: list[str] = []
+    # Lead with matched entity visuals (max 2)
+    for vis in matched_visuals[:2]:
+        query_parts.append(vis)
+    # Add any leftover proper nouns
+    for noun in filtered_nouns[:2]:
+        if noun.lower() not in " ".join(query_parts).lower():
+            query_parts.append(noun)
+    # Add visual concepts (max 2)
+    for vc in visual_concepts[:2]:
+        if vc not in " ".join(query_parts).lower():
+            query_parts.append(vc)
+    # Always end with genre anchor
+    query_parts.append("asoiaf art")
+
+    search_query = " ".join(query_parts) if len(query_parts) > 1 else "asoiaf fantasy art"
+
+    # 6. Looking-for description
+    if matched_visuals:
+        looking_for = "Artwork showing: " + ", ".join(matched_visuals[:3])
+    else:
+        looking_for = "General ASOIAF artwork matching: " + text[:60]
+
     return {
-        "characters": proper_nouns[:3],
-        "location": "",
-        "event": "",
-        "concepts": [],
+        "characters": characters[:4],
+        "location": location,
+        "event": event,
+        "concepts": concepts + visual_concepts[:3],
         "mood": "dramatic",
-        "search_query": " ".join(proper_nouns[:4]) + " asoiaf art" if proper_nouns else "asoiaf fantasy art",
-        "looking_for": "General ASOIAF artwork matching: " + text[:60],
+        "search_query": search_query,
+        "looking_for": looking_for,
     }
+
+
+def _naive_extract_all(segments: list[ScriptSegment]) -> list[dict]:
+    """Run naive extraction on every segment with neighbour context."""
+    results = []
+    for i, seg in enumerate(segments):
+        neighbors = []
+        if i > 0:
+            neighbors.append(segments[i - 1].text)
+        if i + 1 < len(segments):
+            neighbors.append(segments[i + 1].text)
+        results.append(_naive_entity_extraction(seg.text, neighbors=neighbors))
+    return results
 
 
 # ---------------------------------------------------------------------------
@@ -616,7 +893,7 @@ def process_images_for_segments(
     if config.anthropic_api_key:
         entities_list = extract_entities_batch(segments, config.anthropic_api_key)
     else:
-        entities_list = [_naive_entity_extraction(seg.text) for seg in segments]
+        entities_list = _naive_extract_all(segments)
 
     # Step 2: Score library against each segment
     assignments = []
