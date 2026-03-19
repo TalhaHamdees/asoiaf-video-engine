@@ -328,6 +328,7 @@ def phase_continue(config: Config):
     raw_video = compose_video(
         segments, clean_audio, word_timestamps,
         config.video, config.caption, raw_video,
+        watermark_config=config.watermark,
     )
 
     # ── Add captions ──

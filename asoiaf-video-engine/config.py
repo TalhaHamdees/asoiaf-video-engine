@@ -46,26 +46,40 @@ class AudioConfig:
 
 @dataclass
 class CaptionConfig:
-    font_path: str = "assets/fonts/Poppins-Bold.ttf"
-    font_size: int = 70
+    font_path: str = "assets/fonts/Poppins-Black.ttf"
+    font_size: int = 85
     font_color: str = "#FFFFFF"
     stroke_color: str = "#000000"
-    stroke_width: int = 5
-    highlight_color: str = "#FF4444"  # Red highlight for current word
+    stroke_width: int = 6
+    highlight_color: str = "#FF3B3B"  # Red highlight for current word
     words_per_group: int = 2
-    position_y_ratio: float = 0.78
+    position_y_ratio: float = 0.50  # Center of frame
     style: str = "highlight"  # "srt" or "highlight"
     uppercase: bool = True
+
+
+@dataclass
+class WatermarkConfig:
+    enabled: bool = True
+    channel_name: str = "FICTOPIA"
+    font_path: str = "assets/fonts/Poppins-Bold.ttf"
+    font_size: int = 26
+    base_color: str = "#888888"  # Gray for first part
+    highlight_color: str = "#FF3B3B"  # Red for highlighted part
+    highlight_chars: int = 0  # 0 = no highlight split, just use base_color
+    position_y_ratio: float = 0.72  # Below main captions
+    opacity: int = 140  # 0-255
 
 
 @dataclass
 class VideoConfig:
     width: int = 1080
     height: int = 1920
-    fps: int = 30
-    ken_burns_zoom_range: tuple = (1.0, 1.15)
-    ken_burns_pan_pixels: int = 80
+    fps: int = 60
+    ken_burns_zoom_range: tuple = (1.0, 1.25)
+    ken_burns_pan_pixels: int = 50
     crossfade_duration: float = 0.3
+    transition_blur_frames: int = 4  # Motion blur whip-cut frames at 60fps
     output_codec: str = "libx264"
     output_bitrate: str = "8M"
     audio_bitrate: str = "192k"
@@ -84,6 +98,7 @@ class Config:
     image_search: ImageSearchConfig = field(default_factory=ImageSearchConfig)
     audio: AudioConfig = field(default_factory=AudioConfig)
     caption: CaptionConfig = field(default_factory=CaptionConfig)
+    watermark: WatermarkConfig = field(default_factory=WatermarkConfig)
     video: VideoConfig = field(default_factory=VideoConfig)
     whisper: WhisperConfig = field(default_factory=WhisperConfig)
     temp_dir: Path = Path("temp")
