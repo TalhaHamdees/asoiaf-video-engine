@@ -9,13 +9,17 @@ from pathlib import Path
 
 @dataclass
 class ElevenLabsConfig:
-    api_key: str = "YOUR_ELEVENLABS_API_KEY"
-    voice_id: str = "YOUR_VOICE_ID"
+    api_key: str = "8285089754:2f6179734538506f51624f6c4d59726d552b633869773d3d"
+    voice_id: str = "G17SuINrv2H9FC6nvetn"
+    template_uuid: str = "089d3a91-1902-42fa-b06c-7c5098bd8a52"  # "Christopher" template
+    base_url: str = "https://voiceapi.csv666.ru"
     model_id: str = "eleven_multilingual_v2"
     stability: float = 0.5
     similarity_boost: float = 0.75
     style: float = 0.0
     speed: float = 1.0
+    poll_interval: float = 3.0  # seconds between status checks
+    poll_timeout: float = 300.0  # max wait time in seconds
 
 
 @dataclass
