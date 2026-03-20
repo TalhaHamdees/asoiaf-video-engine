@@ -1,18 +1,23 @@
 """
 Configuration for the ASOIAF Video Engine.
-Fill in your API keys and adjust settings as needed.
+Reads secrets from .env file; all other settings have sensible defaults.
 """
 
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
+
+from dotenv import load_dotenv
+
+load_dotenv()
 
 
 @dataclass
 class ElevenLabsConfig:
-    api_key: str = "8285089754:2f6179734538506f51624f6c4d59726d552b633869773d3d"
-    voice_id: str = "G17SuINrv2H9FC6nvetn"
+    api_key: str = field(default_factory=lambda: os.environ.get("ELEVENLABS_API_KEY", ""))
+    voice_id: str = field(default_factory=lambda: os.environ.get("ELEVENLABS_VOICE_ID", "G17SuINrv2H9FC6nvetn"))
     template_uuid: str = "089d3a91-1902-42fa-b06c-7c5098bd8a52"  # "Christopher" template
-    base_url: str = "https://voiceapi.csv666.ru"
+    base_url: str = field(default_factory=lambda: os.environ.get("ELEVENLABS_BASE_URL", "https://voiceapi.csv666.ru"))
     model_id: str = "eleven_multilingual_v2"
     stability: float = 0.5
     similarity_boost: float = 0.75
@@ -25,7 +30,7 @@ class ElevenLabsConfig:
 @dataclass
 class ImageSearchConfig:
     # Anthropic API key for entity extraction + auto-tagging
-    anthropic_api_key: str = ""
+    anthropic_api_key: str = field(default_factory=lambda: os.environ.get("ANTHROPIC_API_KEY", ""))
     # Library paths
     local_library_path: Path = Path("assets/images")
     # Matching

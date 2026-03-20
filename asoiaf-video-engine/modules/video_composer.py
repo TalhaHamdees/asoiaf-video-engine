@@ -13,6 +13,7 @@ from PIL import Image, ImageDraw, ImageFont, ImageFilter
 
 from config import VideoConfig, CaptionConfig, WatermarkConfig
 from modules.script_parser import ScriptSegment
+from modules.ffmpeg_helper import get_ffmpeg_path
 
 logger = logging.getLogger(__name__)
 
@@ -451,7 +452,7 @@ def burn_srt_captions(video_path: Path, srt_path: Path, output_path: Path, confi
         f"OutlineColour=&H00000000,BorderStyle=3,Outline={config.stroke_width},"
         f"Alignment=2,MarginV=200'"
     )
-    cmd = ["ffmpeg", "-y", "-i", str(video_path), "-vf", vf, "-c:a", "copy", str(output_path)]
+    cmd = [get_ffmpeg_path(), "-y", "-i", str(video_path), "-vf", vf, "-c:a", "copy", str(output_path)]
     result = subprocess.run(cmd, capture_output=True, text=True)
     if result.returncode != 0:
         stderr_lines = result.stderr.strip().split("\n")

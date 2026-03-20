@@ -1,0 +1,27 @@
+# Environment
+.env
+credentials.json
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+venv/
+
+# Project artifacts
+temp/
+output/
+input/images/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+Thumbs.db
+.DS_Store
+
+# Large files
+*.mp4
+*.mp3
+*.wav
