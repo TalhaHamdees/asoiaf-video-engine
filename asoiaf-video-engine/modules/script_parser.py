@@ -21,6 +21,9 @@ class ScriptSegment:
     end_time: float = 0.0
     # Manual image override from script (e.g., [IMAGE: filename.jpg])
     manual_image: str | None = None
+    # Sub-shot index when one media is split across multiple <=3s slots
+    # (0 = first/wide shot, 1+ = punch-in shots on the same media).
+    variation: int = 0
 
     @property
     def duration(self) -> float:

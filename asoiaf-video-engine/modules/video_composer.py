@@ -46,28 +46,61 @@ def _pick_effect(index: int) -> KenBurnsEffect:
     return effects[index % len(effects)]
 
 
-def prepare_image(image_path: str, target_w: int, target_h: int, padding: float = 1.35) -> np.ndarray:
-    """Load and crop image to target size with padding for Ken Burns room."""
+def prepare_image(
+    image_path: str, target_w: int, target_h: int, padding: float = 1.35,
+    focus: tuple[float, float] | None = None,
+) -> tuple[np.ndarray, tuple[float, float]]:
+    """
+    Load and crop an image to a padded target buffer, aimed at the subject.
+
+    `focus` is the normalized (fx, fy) subject location in the source (0..1).
+    When None, the subject is auto-detected. The padded buffer is positioned so
+    the subject sits as close to center as the image bounds allow, leaving
+    padding room for Ken Burns motion.
+
+    Returns (buffer_array, focus_in_buffer) where focus_in_buffer is the
+    subject's pixel location within the returned buffer, so Ken Burns can keep
+    it centered through the zoom even when the crop had to clamp to an edge.
+    """
     img = Image.open(image_path).convert("RGB")
+    if focus is None:
+        from modules.framing import detect_focus_point
+        focus = detect_focus_point(np.array(img))
+    fx, fy = focus
+
     pw, ph = int(target_w * padding), int(target_h * padding)
     scale = max(pw / img.width, ph / img.height)
-    img = img.resize((int(img.width * scale), int(img.height * scale)), Image.LANCZOS)
-    left = (img.width - pw) // 2
-    top = (img.height - ph) // 2
+    nw, nh = int(img.width * scale), int(img.height * scale)
+    img = img.resize((nw, nh), Image.LANCZOS)
+
+    # Center the padded buffer on the subject, clamped to image bounds.
+    cx, cy = fx * nw, fy * nh
+    left = int(max(0, min(cx - pw / 2, nw - pw)))
+    top = int(max(0, min(cy - ph / 2, nh - ph)))
     img = img.crop((left, top, left + pw, top + ph))
-    return np.array(img)
+
+    # Subject position inside the cropped buffer (clamped to interior).
+    buf_fx = min(pw - 1.0, max(0.0, cx - left))
+    buf_fy = min(ph - 1.0, max(0.0, cy - top))
+    return np.array(img), (buf_fx, buf_fy)
 
 
 def apply_ken_burns(
     src: np.ndarray, t: float, duration: float, effect: KenBurnsEffect,
     tw: int, th: int, zoom_range=(1.0, 1.25), pan_px: int = 50,
+    focus_xy: tuple[float, float] | None = None,
 ) -> np.ndarray:
     progress = max(0.0, min(1.0, t / duration if duration > 0 else 0))
     # Ease-in-out for smoother motion
     progress = progress * progress * (3 - 2 * progress)
 
     sh, sw = src.shape[:2]
-    cx, cy = sw / 2, sh / 2
+    # Anchor the motion on the subject so the zoom pulls toward it, not the
+    # geometric center of the frame.
+    if focus_xy is not None:
+        cx, cy = focus_xy
+    else:
+        cx, cy = sw / 2, sh / 2
     z_min, z_max = zoom_range
     zoom, ox, oy = 1.0, 0.0, 0.0
 
@@ -304,12 +337,35 @@ def _srt_time(sec: float) -> str:
 # Main composition
 # ---------------------------------------------------------------------------
 
+VIDEO_EXTS = {".mp4", ".mov", ".m4v", ".webm", ".mkv", ".avi"}
+
+
+def _is_video(path: str | None) -> bool:
+    return bool(path) and Path(path).suffix.lower() in VIDEO_EXTS
+
+
+def _crop_frame_to_focus(
+    frame: np.ndarray, tw: int, th: int, focus: tuple[float, float],
+) -> np.ndarray:
+    """Scale-and-crop a single RGB frame to (tw, th) aimed at normalized focus."""
+    import cv2
+    ih, iw = frame.shape[:2]
+    scale = max(tw / iw, th / ih)
+    nw, nh = max(tw, int(iw * scale)), max(th, int(ih * scale))
+    resized = cv2.resize(frame, (nw, nh), interpolation=cv2.INTER_LINEAR)
+    fx, fy = focus
+    cx, cy = fx * nw, fy * nh
+    left = int(max(0, min(cx - tw / 2, nw - tw)))
+    top = int(max(0, min(cy - th / 2, nh - th)))
+    return resized[top:top + th, left:left + tw]
+
+
 def compose_video(
     segments: list[ScriptSegment], audio_path: Path, word_timestamps: list,
     config: VideoConfig, caption_config: CaptionConfig, output_path: Path,
     watermark_config: WatermarkConfig | None = None,
 ) -> Path:
-    from moviepy import ImageClip, AudioFileClip, VideoClip, concatenate_videoclips
+    from moviepy import AudioFileClip, VideoClip, VideoFileClip, concatenate_videoclips
 
     logger.info("Composing video (%d segments, %dfps)...", len(segments), config.fps)
 
@@ -337,17 +393,60 @@ def compose_video(
         else:
             logger.warning("Watermark font %s not found.", wm_font_path)
 
-    # Prepare segment images and data
+    vid_w, vid_h = config.width, config.height
+    zoom, pan = config.ken_burns_zoom_range, config.ken_burns_pan_pixels
+
+    # Prepare segment media. Each entry carries everything the frame function
+    # needs plus a representative still used for whip transitions.
+    open_clips = []  # VideoFileClips to close after encoding
+
+    def _zoom_for_variation(v: int) -> tuple[float, float]:
+        # Sub-shots of the same media punch in tighter so a reused image reads
+        # as a distinct, closer shot rather than a frozen hold.
+        if v <= 0:
+            return zoom
+        zlo = min(1.0 + 0.10 * v, 1.30)
+        zhi = min(zlo + (zoom[1] - zoom[0]) + 0.04, 1.36)
+        return (zlo, zhi)
+
+    def _base_frame_image(img_src, focus, effect, t, d, zoom_range):
+        if img_src is None:
+            return np.full((vid_h, vid_w, 3), (30, 30, 40), dtype=np.uint8)
+        return apply_ken_burns(img_src, t, d, effect, vid_w, vid_h, zoom_range, pan, focus_xy=focus)
+
+    def _base_frame_video(vclip, win_start, focus, t):
+        clip_dur = max(vclip.duration, 1e-3)
+        tt = (win_start + t) % clip_dur  # loop if the clip is shorter than the slot
+        frame = vclip.get_frame(tt)
+        return _crop_frame_to_focus(frame, vid_w, vid_h, focus)
+
     seg_data = []
     for seg in segments:
         if seg.duration <= 0:
             continue
         effect = _pick_effect(seg.index)
-        if seg.image_path and Path(seg.image_path).exists():
-            src = prepare_image(seg.image_path, config.width, config.height)
+        entry = {"seg": seg, "effect": effect, "kind": "blank",
+                 "img_src": None, "focus": None, "vclip": None, "win_start": 0.0}
+
+        path = seg.image_path
+        if _is_video(path) and Path(path).exists():
+            from modules.framing import detect_focus_point
+            vclip = VideoFileClip(str(path))
+            open_clips.append(vclip)
+            # Detect focus on a representative frame near the window middle.
+            sample_t = min(vclip.duration * 0.5, max(0.0, vclip.duration - 0.05))
+            focus = detect_focus_point(vclip.get_frame(sample_t).astype("uint8"))
+            entry.update(kind="video", vclip=vclip, win_start=0.0, focus=focus)
+            entry["repr"] = _base_frame_video(vclip, 0.0, focus, 0.0)
+        elif path and Path(path).exists():
+            img_src, focus = prepare_image(path, vid_w, vid_h, focus=None)
+            zr = _zoom_for_variation(getattr(seg, "variation", 0))
+            entry.update(kind="image", img_src=img_src, focus=focus, zoom=zr)
+            entry["repr"] = _base_frame_image(img_src, focus, effect, 0.0, seg.duration, zr)
         else:
-            src = None
-        seg_data.append((seg, src, effect))
+            entry["repr"] = np.full((vid_h, vid_w, 3), (30, 30, 40), dtype=np.uint8)
+
+        seg_data.append(entry)
 
     if not seg_data:
         raise ValueError("No segments to compose.")
@@ -357,56 +456,41 @@ def compose_video(
     transition_sec = blur_frames / config.fps
 
     clips = []
-    for seg_idx, (seg, src, effect) in enumerate(seg_data):
+    for seg_idx, entry in enumerate(seg_data):
+        seg = entry["seg"]
         dur = seg.duration
         audio_start = seg.start_time
-
-        # Get prev/next frames for transitions
-        prev_src = seg_data[seg_idx - 1][1] if seg_idx > 0 else None
-        next_src = seg_data[seg_idx + 1][1] if seg_idx < len(seg_data) - 1 else None
+        prev_repr = seg_data[seg_idx - 1]["repr"] if seg_idx > 0 else None
 
         def make_frame_fn(
-            s=src, e=effect, d=dur, a_start=audio_start,
+            ent=entry, d=dur, a_start=audio_start,
             wg=word_groups, cc=caption_config, cf=caption_font,
             hl=use_highlight, wmc=watermark_config, wmf=wm_font,
-            p_src=prev_src, trans_dur=transition_sec,
-            vid_w=config.width, vid_h=config.height,
-            zoom=config.ken_burns_zoom_range, pan=config.ken_burns_pan_pixels,
+            p_repr=prev_repr, trans_dur=transition_sec,
         ):
+            def base_frame(t):
+                if ent["kind"] == "video":
+                    return _base_frame_video(ent["vclip"], ent["win_start"], ent["focus"], t)
+                if ent["kind"] == "image":
+                    return _base_frame_image(ent["img_src"], ent["focus"], ent["effect"], t, d, ent["zoom"])
+                return np.full((vid_h, vid_w, 3), (30, 30, 40), dtype=np.uint8)
+
             def make_frame(t):
-                # Check if we're in the transition-in zone (first few frames)
-                if t < trans_dur and p_src is not None:
+                # Whip transition over the first few frames of the segment.
+                if t < trans_dur and p_repr is not None:
                     progress = t / trans_dur
-                    # Get end frame of previous segment
-                    prev_frame = apply_ken_burns(
-                        p_src, 1.0, 1.0, KenBurnsEffect.ZOOM_IN,
-                        vid_w, vid_h, zoom, pan,
-                    )
-                    if s is not None:
-                        cur_frame = apply_ken_burns(s, 0.0, d, e, vid_w, vid_h, zoom, pan)
-                    else:
-                        cur_frame = np.full((vid_h, vid_w, 3), (30, 30, 40), dtype=np.uint8)
-                    frame = create_whip_blur_frame(prev_frame, cur_frame, progress, vid_w, vid_h)
+                    frame = create_whip_blur_frame(p_repr, base_frame(t), progress, vid_w, vid_h)
                 else:
-                    if s is not None:
-                        frame = apply_ken_burns(s, t, d, e, vid_w, vid_h, zoom, pan)
-                    else:
-                        frame = np.full((vid_h, vid_w, 3), (30, 30, 40), dtype=np.uint8)
+                    frame = base_frame(t)
 
-                # Captions
                 if hl and cf is not None:
-                    abs_time = a_start + t
-                    frame = _render_highlight_caption(frame, abs_time, wg, cc, cf)
-
-                # Watermark
+                    frame = _render_highlight_caption(frame, a_start + t, wg, cc, cf)
                 if wmc and wmf is not None:
                     frame = _render_watermark(frame, wmc, wmf)
-
                 return frame
             return make_frame
 
-        clip = VideoClip(make_frame_fn(), duration=dur).with_fps(config.fps)
-        clips.append(clip)
+        clips.append(VideoClip(make_frame_fn(), duration=dur).with_fps(config.fps))
 
     video = concatenate_videoclips(clips)
     audio = AudioFileClip(str(audio_path))
@@ -417,11 +501,18 @@ def compose_video(
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
     logger.info("Encoding -> %s ...", output_path)
-    video.write_videofile(
-        str(output_path), fps=config.fps, codec=config.output_codec,
-        bitrate=config.output_bitrate, audio_bitrate=config.audio_bitrate,
-        audio_codec="aac", threads=4, logger=None,
-    )
+    try:
+        video.write_videofile(
+            str(output_path), fps=config.fps, codec=config.output_codec,
+            bitrate=config.output_bitrate, audio_bitrate=config.audio_bitrate,
+            audio_codec="aac", threads=4, logger=None,
+        )
+    finally:
+        for vc in open_clips:
+            try:
+                vc.close()
+            except Exception:
+                pass
     logger.info("Video saved: %s", output_path)
     return output_path
 
